@@ -62,6 +62,26 @@ Add to your Emacs configuration:
 ;; (setq esb-storage-backend 'plain)
 #+END_SRC
 
+*** Asymmetric vs Symmetric Encryption
+
+By default, ESB uses symmetric encryption (passphrase only). If you want asymmetric encryption tied to your GPG key:
+
+#+BEGIN_SRC elisp
+(setq esb-gpg-recipient "your.email@example.com") ; or GPG key ID
+#+END_SRC
+
+If you already have a symmetrically encrypted file, reload and save to re-encrypt:
+#+BEGIN_SRC elisp
+M-x esb-reload-bookmarks
+M-x esb-add-bookmark  ; or edit any bookmark to trigger save
+#+END_SRC
+
+To disable encryption entirely:
+#+BEGIN_SRC elisp
+(setq esb-storage-backend 'plain)
+(setq esb-bookmarks-file "~/bookmarks/bookmarks.json")
+#+END_SRC
+
 *** Key Binding Setup
 
 ESB doesn't define any global key bindings by default to avoid conflicts. You need to define your own key bindings.

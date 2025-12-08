@@ -39,6 +39,28 @@
                  (function :tag "Custom backend"))
   :group 'esb)
 
+(defcustom esb-gpg-recipient nil
+  "GPG key ID or email for asymmetric encryption.
+When nil, epa-file uses symmetric encryption (passphrase only).
+Set this to your GPG key ID or email for asymmetric encryption.
+Example: \"your.email@example.com\" or \"ABCD1234\"."
+  :type '(choice (const :tag "Symmetric (passphrase)" nil)
+                 (string :tag "Key ID or email"))
+  :group 'esb)
+
+(defcustom esb-clear-cache-on-idle nil
+  "When non-nil, clear the bookmark cache after idle timeout.
+This provides additional security by not keeping decrypted
+bookmarks in memory indefinitely."
+  :type 'boolean
+  :group 'esb)
+
+(defcustom esb-idle-clear-seconds 300
+  "Seconds of idle time before clearing cache.
+Only used when `esb-clear-cache-on-idle' is non-nil."
+  :type 'integer
+  :group 'esb)
+
 ;;; Internal Variables
 
 (defvar esb-bookmarks-cache nil
@@ -46,6 +68,37 @@
 
 (defvar esb-cache-dirty nil
   "Flag indicating if cache needs to be saved.")
+
+(defvar esb--idle-timer nil
+  "Timer for clearing cache on idle.")
+
+;;; Cache Security Functions
+
+(defun esb--clear-cache ()
+  "Clear the in-memory bookmark cache."
+  (when esb-bookmarks-cache
+    (setq esb-bookmarks-cache nil)
+    (message "ESB: Bookmark cache cleared")))
+
+(defun esb--setup-idle-timer ()
+  "Setup idle timer for cache clearing if enabled."
+  (when esb--idle-timer
+    (cancel-timer esb--idle-timer))
+  (when esb-clear-cache-on-idle
+    (setq esb--idle-timer
+          (run-with-idle-timer esb-idle-clear-seconds t #'esb--clear-cache))))
+
+(defun esb--setup-cache-clearing ()
+  "Setup all cache clearing hooks and timers."
+  ;; Clear on suspend/sleep
+  (add-hook 'suspend-hook #'esb--clear-cache)
+  ;; Clear when Emacs loses focus (optional, can be noisy)
+  ;; (add-hook 'focus-out-hook #'esb--clear-cache)
+  ;; Clear on screen lock (if using screen-lock package or similar)
+  (when (boundp 'screen-lock-hook)
+    (add-hook 'screen-lock-hook #'esb--clear-cache))
+  ;; Setup idle timer
+  (esb--setup-idle-timer))
 
 ;;; Utility Functions
 
@@ -59,7 +112,13 @@
   (and (stringp url)
        (not (string-empty-p url))
        (string-match-p "^https?://" url)
-       (url-generic-parse-url url)))
+       (let ((parsed (url-generic-parse-url url)))
+         (and parsed
+              (url-host parsed)
+              (not (string-empty-p (url-host parsed)))
+              ;; Must have at least one dot in host (or be localhost)
+              (or (string-match-p "\\." (url-host parsed))
+                  (string= "localhost" (url-host parsed)))))))
 
 (defun esb--valid-bookmark-p (bookmark)
   "Check if BOOKMARK has valid structure."
@@ -106,12 +165,14 @@
 (defun esb--write-bookmarks-gpg (bookmarks)
   "Write BOOKMARKS to GPG encrypted file."
   (esb--ensure-epa-setup)
-  (condition-case err
-      (with-temp-buffer
-        (insert (json-encode bookmarks))
-        (write-file esb-bookmarks-file))
-    (error
-     (user-error "Failed to write bookmark file: %s" (error-message-string err)))))
+  (let ((epa-file-encrypt-to (when esb-gpg-recipient
+                               (list esb-gpg-recipient))))
+    (condition-case err
+        (with-temp-buffer
+          (insert (json-encode bookmarks))
+          (write-region (point-min) (point-max) esb-bookmarks-file))
+      (error
+       (user-error "Failed to write bookmark file: %s" (error-message-string err))))))
 
 (defun esb--read-bookmarks-plain ()
   "Read bookmarks from plain text file."
@@ -135,7 +196,7 @@
   (condition-case err
       (with-temp-buffer
         (insert (json-encode bookmarks))
-        (write-file esb-bookmarks-file))
+        (write-region (point-min) (point-max) esb-bookmarks-file))
     (error
      (user-error "Failed to write bookmark file: %s" (error-message-string err)))))
 
@@ -189,8 +250,9 @@
     (dolist (bookmark (esb--get-bookmarks))
       (let ((tags (alist-get 'tags bookmark)))
         (when tags
-          (setq all-tags (append all-tags tags)))))
-    (seq-uniq all-tags)))
+          (dolist (tag tags)
+            (push tag all-tags)))))
+    (seq-uniq (nreverse all-tags))))
 
 (defun esb--filter-bookmarks-by-tag (tag)
   "Filter bookmarks that contain TAG."
@@ -212,7 +274,7 @@
            tags)))
   
   (unless (esb--valid-url-p url)
-    (user-error "Invalid URL: %s" url))
+    (user-error "Invalid URL: %s (must be http(s):// with valid host)" url))
   
   (when (esb--bookmark-exists-p url)
     (user-error "Bookmark already exists: %s" url))
@@ -376,6 +438,14 @@
       (message "Bookmark file already exists at: %s" esb-bookmarks-file)
     (esb--write-bookmarks '())
     (message "Initialized empty bookmark file at: %s" esb-bookmarks-file)))
+
+;;;###autoload
+(defun esb-setup ()
+  "Setup ESB with cache clearing hooks.
+Call this in your init file after loading ESB."
+  (interactive)
+  (esb--setup-cache-clearing)
+  (message "ESB setup complete"))
 
 (provide 'esb)
 
